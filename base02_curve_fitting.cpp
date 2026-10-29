@@ -40,7 +40,7 @@ void Solve(bool use_huber, const std::vector<double>& xs, const std::vector<doub
     ceres::Problem problem;
     for (size_t i = 0; i < xs.size(); ++i) {
         ceres::CostFunction* cost = new ceres::AutoDiffCostFunction<CurveResidual, 1, 3>(
-            new CurveResidual(xs[i], ys[i], 0.02));
+            new CurveResidual(xs[i], ys[i], 0.2));
 
         // 关键：LossFunction 作用在「白化后的残差」上。
         // 阈值 1.0 表示：残差超过 1 sigma 后，代价从二次增长退化为线性增长，
@@ -67,7 +67,7 @@ int main() {
     const double a_true = 1.0, b_true = 2.0, c_true = 0.5;
 
     std::mt19937 rng(42);
-    std::normal_distribution<double> noise(0.0, 0.02);
+    std::normal_distribution<double> noise(0.0, 0.2);
 
     std::vector<double> xs, ys;
     for (int i = 0; i < 100; ++i) {

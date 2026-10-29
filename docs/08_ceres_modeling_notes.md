@@ -14,6 +14,8 @@ $$
 
 因此残差如何分块也是统计模型的一部分。BA 把同一个像素的 $(u,v)$ 放入同一块，表示对该次二维观测整体降权。
 
+取 Huber 阈值 $\delta=1$，令 $r_1=r_2=0.8$。若分成两个标量块，每块 $s=0.64\le1$，都没有降权，总代价为 $\frac12(0.64+0.64)=0.64$。若放在一个二维块，$s=1.28>1$，已经进入线性段，代价为 $\sqrt{1.28}-0.5\approx0.6314$。差别来自核是对**整块平方范数**起作用的。
+
 ## 2. 一般协方差的白化方向
 
 白化矩阵 $W$ 要满足 $W^\top W = \Sigma^{-1}$，残差为 $W e$。有两种常见计算方式：
@@ -34,6 +36,26 @@ const Eigen::Matrix2d whitening =
 
 白化同时作用于残差与雅可比：$r = W e$、$J = W J_e$。如果使用自动微分，functor 中的矩阵乘法保留 `T` 类型，导数会一起传播。协方差若随待优化状态变化，还要决定是否对权重求导，并考虑概率模型中的归一化项，不能沿用“固定协方差”的结论。
 
+### 2.1 用一个相关噪声矩阵检查方向
+
+设协方差和它的下三角因子为：
+
+$$
+\Sigma=\begin{bmatrix}4&2\\2&2\end{bmatrix},\qquad
+L=\begin{bmatrix}2&0\\1&1\end{bmatrix},\qquad\Sigma=LL^\top.
+$$
+
+白化残差通过解 $Lr=e$ 得到。取 $e=(2,2)^\top$：第一行给出 $2r_1=2$，第二行给出 $r_1+r_2=2$，所以 $r=(1,1)^\top$，平方范数为 2。
+
+也可验证：
+
+$$
+W=L^{-1}=\begin{bmatrix}0.5&0\\-0.5&1\end{bmatrix},\qquad
+W^\top W=\begin{bmatrix}0.5&-0.5\\-0.5&1\end{bmatrix}=\Sigma^{-1}.
+$$
+
+原始两个误差在统计上相关，白化会把它们混合，而不是只各除一个标准差。残差里的负数系数不是“负权重”，只是去除相关性的线性变换。
+
 ## 3. 解析雅可比：ambient 与 tangent 不要混淆
 
 对于 `SizedCostFunction<2, 4, 3, 3>`：
@@ -44,6 +66,18 @@ const Eigen::Matrix2d whitening =
 - `jacobians == nullptr` 时只计算残差；某个 `jacobians[index] == nullptr` 时不能写该块。
 
 不能把手推的 $2\times 3$ 李代数雅可比直接填入要求 $2\times 4$ 的缓冲区。还要区分物理小旋转 $\delta\theta$ 与 Ceres 半角增量 $\delta$：$\delta\theta = 2\delta$。
+
+把维度连起来看就更清楚：
+
+$$
+\underbrace{\frac{\partial r}{\partial\delta}}_{2\times3}
+=\underbrace{\frac{\partial r}{\partial q}}_{2\times4}
+\underbrace{\frac{\partial(q\boxplus\delta)}{\partial\delta}}_{4\times3}.
+$$
+
+ambient 指“参数数组里存了几个数”，tangent 指“每次能独立调整几个自由量”。在单位四元数上，四个存储分量受到一个单位范数约束，所以只有三个自由增量。
+
+row-major 表示按行连续存储。例如 $2\times3$ 雅可比 $\begin{bmatrix}a&b&c\\d&e&f\end{bmatrix}$ 在缓冲区中依次写成 `a,b,c,d,e,f`。数学值正确但布局写反，也会让求解器读到错误导数。
 
 `GradientChecker` 传入的 manifold 数量必须等于参数块数量。对于本课程重投影因子，可以使用：
 
@@ -71,6 +105,8 @@ const bool valid = checker.Probe(parameters, 1e-6, &results);
 核函数只是降权，不能保证发现所有错误关联，也不等于剔除外点。阈值缩小会同时降低一部分正确观测的权重。不同核、不同白化尺度、不同观测子集的 `final_cost` 一般不可直接横向判优。
 
 若用 IRLS 解释核函数，常见近似权重是 $\sqrt{\rho'(s)}$ 乘在残差/雅可比上；不要把这等同于所有情况下 Ceres 内部完整的二阶修正。
+
+这里 $\chi_d^2$ 是 $d$ 个独立标准正态变量平方和的分布。它的期望为 $d$，因此 $\mathbb E\|r\|^2=d$；这是平方范数的期望，不是说每次观测都必须刚好等于 $d$，也不是 $\mathbb E\|r\|=\sqrt d$。拟合同一批数据以后，残差统计还会受参数自由度和鲁棒权重影响。
 
 ## 5. 生命周期和所有权
 
@@ -106,6 +142,18 @@ LM 阻尼使某次线性子问题可解，**并不让原始问题可观**。`CON
 - 正定情形使用分解求解；含零空间时用秩揭示分解/截断，并检查梯度是否与信息矩阵的值域一致。
 
 比起构造正规方程，直接对平方根雅可比做 QR 消元可避免条件数平方。对于非线性流形，保存 $A,c,x_{lin}$ 并用一致的 `Minus` 表示局部位移；固定线性先验本身不等于实现 FEJ。
+
+### 7.1 不使用先验中心的等价写法
+
+对正定 $H_{prior}$，也可以先选 $A$ 满足 $A^\top A=H_{prior}$，再解 $A^\top c=g_{prior}$，将先验写成：
+
+$$
+r_{prior}=A\delta x+c.
+$$
+
+因为 $\frac12\|A\delta x+c\|^2$ 的二次项是 $\frac12\delta x^\top H_{prior}\delta x$，一次项是 $g_{prior}^\top\delta x$。这和第 6 课“平方根信息乘到先验中心的距离”只差常数。用 $H_{prior}=LL^\top$ 时，应取 $A=L^\top$、解 $Lc=g_{prior}$。
+
+非线性流形中，将 $\delta x$ 换成与保存参考状态一致的 $x\boxminus x_{lin}$。如果先验只有半正定信息，则需要秩揭示分解并确保 $g_{prior}$ 位于信息矩阵的值域中，不能直接沿用正定三角求解。
 
 ## 8. 版本与官方核对入口
 

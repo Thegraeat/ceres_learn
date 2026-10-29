@@ -36,13 +36,13 @@ $$
 ### 1.2 Schur 补
 
 $$
-H_{mm} =
+H_{prior} =
 \begin{bmatrix}
 1 & 1 \\
 1 & 1.5
 \end{bmatrix},
 \qquad
-g_m =
+g_{prior} =
 \begin{bmatrix}
 0 \\ -0.6
 \end{bmatrix}
@@ -52,7 +52,7 @@ $$
 
 $$
 x_{prior}
-= x_{lin,m} - H_{mm}^{-1}g_m
+= x_{lin,m} - H_{prior}^{-1}g_{prior}
 = \begin{bmatrix}1.2\\1.8\end{bmatrix}
 - \begin{bmatrix}3 & -2\\-2 & 2\end{bmatrix}
 \begin{bmatrix}0\\-0.6\end{bmatrix}
@@ -69,7 +69,7 @@ $$
 ### 1.4 Cholesky
 
 $$
-H_{mm} = LL^\top,
+H_{prior} = LL^\top,
 \qquad
 L =
 \begin{bmatrix}
@@ -83,6 +83,22 @@ $$
 $$
 r_{prior} = L^\top\left(x_{0:1} - x_{prior}\right)
 $$
+
+### 1.5 把消元梯度也手算出来
+
+保留 $x_0,x_1$、删除 $x_2$，原始矩阵块为 $H_{mr}=(0,1)^\top$、$H_{rr}=2$，原始梯度块为 $g_m=(0,-0.1)^\top$、$g_r=1$。所以：
+
+$$
+g_{prior}=\begin{bmatrix}0\\-0.1\end{bmatrix}
+-\begin{bmatrix}0\\1\end{bmatrix}\frac12\cdot1
+=\begin{bmatrix}0\\-0.6\end{bmatrix}.
+$$
+
+负号来自将被删除变量的方程代回保留侧，不是任意选的梯度方向。再解 $H_{prior}d=g_{prior}$，得到 $d=(1.2,-1.2)^\top$，于是中心为 $(1.2,1.8)^\top-d=(0,3)^\top$。
+
+这里 $x_{0:1}$ 表示将 $x_0,x_1$ 堆叠成二维列向量。数学记号统一使用 $H_{prior},g_{prior}$；参考代码仍把它们命名为 `Hmm,gm`，不要与消元前的 $H_{mm},g_m$ 混淆。
+
+同一组线性旧残差在任意展开点都能被一阶式**精确**表示，所以改变 $x_{lin}$ 只会改变增量坐标与梯度，不改变绝对状态中的旧信息。最终中心仍是 $(0,3)$，不是偶然算出了相同数字。
 
 ---
 
@@ -315,10 +331,10 @@ obs x0 = 1.5
 $x_{lin}$ 只是泰勒展开点。边缘化保留的是旧信息在 $x_m$ 上的**边缘分布**，它的均值（最优解）是：
 
 $$
-x_{prior} = x_{lin,m} - H_{mm}^{-1}g_m
+x_{prior} = x_{lin,m} - H_{prior}^{-1}g_{prior}
 $$
 
-在先验正定时，条件是 Schur 消元后的 $g_m = 0$；旧完整问题处于驻点是充分条件，但不是必要条件。注意本答案前文把消元后的矩阵/梯度简记为 $H_{mm}, g_m$，它们不是消元前的原始分块。
+在先验正定时，中心等于展开点的条件是 Schur 消元后的 $g_{prior}=0$；旧完整问题处于驻点是充分条件，但不是必要条件。
 
 ### 4.2 $H_{prior}$ 的物理含义
 
@@ -332,7 +348,7 @@ $H_{prior} = H_{mm} - H_{mr} H_{rr}^{-1} H_{rm}$ 是 Schur 补：
 
 ### 4.3 被丢掉的变量还能回来吗？
 
-不能。边缘化把 $x_r$ 积分掉，只保留二阶统计量。原始观测和 $x_r$ 的具体值都丢失了。
+仅靠先验不能。边缘化后的先验不再包含原始观测和被删除变量的联合表示；这不意味着磁盘上的原始数据被自动删除。若仍保存了原始观测和状态，可以重建原问题再优化。
 
 要恢复只有两种办法：
 

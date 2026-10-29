@@ -26,13 +26,15 @@ ceres_learn/
 ├── base07_engineering.cpp         # 第 7 课：工程工具
 ├── docs/
 │   ├── README.md                  # 讲义总索引
+│   ├── 00_math_primer.md          # 数学预备：符号、矩阵、导数、坐标系、概率
 │   ├── 01_ceres_basics.md
 │   ├── 02_curve_fitting.md
 │   ├── 03_pose_graph.md
 │   ├── 04_ba.md
 │   ├── 05_imu_preintegration.md
 │   ├── 06_marginalization.md
-│   └── 07_engineering.md
+│   ├── 07_engineering.md
+│   └── 08_ceres_modeling_notes.md
 ├── assignments/
 │   ├── README.md                  # 作业总览
 │   ├── 01_homework.md / 01_solution.md / hw01_basics.cpp
@@ -66,6 +68,8 @@ ceres_learn/
 
 完整索引与学习建议见 [`docs/README.md`](docs/README.md)。
 作业总览见 [`assignments/README.md`](assignments/README.md)。
+
+如果公式读起来吃力，先读[数学预备](docs/00_math_primer.md)。各课在对应公式附近补充了符号含义、维度、坐标系、推导中间步骤和可手算的小例子；可以从“这条公式在算什么”开始，再对照代码。
 
 课程校验发现与简化边界见 [`docs/REVIEW.md`](docs/REVIEW.md)；额外接口与建模知识见 [`docs/08_ceres_modeling_notes.md`](docs/08_ceres_modeling_notes.md)。
 
@@ -130,7 +134,7 @@ Ceres 基础 (1)
 
 ## 约定
 
-- 四元数：Ceres `QuaternionManifold` 用 $[w,x,y,z]$，Eigen 用 $[x,y,z,w]$；
+- 四元数：Ceres `QuaternionManifold` 用 $[w,x,y,z]$；Eigen 的 `coeffs()`/原始存储为 $[x,y,z,w]$，但 `Eigen::Quaterniond(w,x,y,z)` 构造参数仍是标量在前；
 - 位姿 $T = [R \mid t]$ 默认 body-to-world，残差里写 $T_{cw}$ 时会明确说明；
 - 残差默认白化（除以噪声 sigma）；
 - 鲁棒核阈值作用在白化后的残差上。

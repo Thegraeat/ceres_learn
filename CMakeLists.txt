@@ -53,3 +53,6 @@ target_link_libraries(hw07_engineering PRIVATE Ceres::ceres)
 #课后练习
 add_executable(my_hwo1 assignments/my_hw01.cpp)
 target_link_libraries(my_hwo1 PRIVATE Ceres::ceres)
+
+add_executable(my_hwo2 assignments/my_hw02.cpp)
+target_link_libraries(my_hwo2 PRIVATE Ceres::ceres)

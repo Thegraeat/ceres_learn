@@ -15,6 +15,10 @@ T = \begin{bmatrix} R & t \\ 0^\top & 1 \end{bmatrix}
 \in SE(3),\qquad R \in SO(3),\ t \in \mathbb{R}^3
 $$
 
+$SO(3)$ 是所有合法三维旋转矩阵的集合；$SE(3)$ 是“旋转加平移”的刚体变换集合。它们不是两种求解器，而是在描述变量允许取什么值。
+
+本课 $T_i=T_{wi}$ 把第 $i$ 个机体系的点变到世界系：$p_w=R_i p_i+t_i$。其中 $t_i$ 是机体原点在世界中的位置。$T$ 是 $4\times4$ 矩阵，对点运算时默认补齐最后一个分量 $1$。
+
 ### 1.1 复合与逆
 
 $$
@@ -30,6 +34,17 @@ R^\top & -R^\top t \\
 0^\top & 1
 \end{bmatrix}
 $$
+
+复合公式来自把两次坐标变换接起来：
+
+$$
+p'=R_2p+t_2,\qquad
+p''=R_1p'+t_1=R_1R_2p+R_1t_2+t_1.
+$$
+
+所以 $T_1T_2$ 是先做右边的 $T_2$，再做左边的 $T_1$。平移不能简单写成 $t_1+t_2$，因为 $t_2$ 也要经过第一段旋转。
+
+逆变换则从 $p_w=Rp_b+t$ 解出 $p_b=R^\top(p_w-t)$，于是逆变换的平移是 $-R^\top t$，不是只写 $-t$。
 
 ### 1.2 四元数表示
 
@@ -65,6 +80,114 @@ $$
 
 这就是代码里 `QuatRotate` 的实现。
 
+#### 1.2.1 四元数里的四个数从哪里来
+
+绕单位轴 $n\in\mathbb R^3$ 按右手定则旋转 $\theta$，单位四元数写成：
+
+$$
+q=\begin{bmatrix}\cos(\theta/2)\\n\sin(\theta/2)\end{bmatrix}.
+$$
+
+$w$ 是标量部分，$u=(x,y,z)^\top$ 是向量部分；$x,y,z$ 不是三个欧拉角。角度在计算中使用弧度。单位约束来自 $\cos^2(\theta/2)+\sin^2(\theta/2)=1$。
+
+不旋转时 $q=(1,0,0,0)$。绕 $z$ 轴转 $90^\circ$ 时：
+
+$$
+q=\left(\frac{\sqrt2}{2},0,0,\frac{\sqrt2}{2}\right).
+$$
+
+Hamilton 乘积中的 $q_1,q_2$ 分别是两段旋转；乘积的结果仍是四元数。它满足 $R(q_1\otimes q_2)=R(q_1)R(q_2)$，所以同样是先做右边的旋转，顺序不能随意交换。
+
+#### 1.2.2 从四元数乘法推到旋转矩阵
+
+把向量 $v$ 写成纯四元数 $p=(0,v)$。在本课约定下，旋转通过：
+
+$$
+p'=q\otimes p\otimes q^*
+$$
+
+实现。用标量和向量表示乘法，比四个分量逐项展开更好理解：
+
+$$
+(s,a)\otimes(t,b)
+=\left(st-a^\top b,\;sb+ta+a\times b\right).
+$$
+
+这里 $a^\top b$ 是点积，$a\times b$ 是叉积。先乘左边两项，再乘共轭：
+
+$$
+q\otimes p=(-u^\top v,\;wv+u\times v),
+$$
+
+$$
+v'=(w^2-u^\top u)v+2u(u^\top v)+2w(u\times v).
+$$
+
+要得到上面第二式，可把向量部分先写成
+$u(u^\top v)+w^2v+2w(u\times v)-(u\times v)\times u$，再使用
+$(u\times v)\times u=(u^\top u)v-(u^\top v)u$。
+
+由于 $w^2+u^\top u=1$，也可以写成代码采用的形式：
+
+$$
+v'=v+2w(u\times v)+2u\times(u\times v).
+$$
+
+定义叉积矩阵：
+
+$$
+[u]_\times=\begin{bmatrix}0&-z&y\\z&0&-x\\-y&x&0\end{bmatrix},
+\qquad [u]_\times v=u\times v.
+$$
+
+把 $v$ 提到右边，就得到旋转矩阵：
+
+$$
+R(q)=I+2w[u]_\times+2[u]_\times^2
+=\begin{bmatrix}
+1-2(y^2+z^2)&2(xy-wz)&2(xz+wy)\\
+2(xy+wz)&1-2(x^2+z^2)&2(yz-wx)\\
+2(xz-wy)&2(yz+wx)&1-2(x^2+y^2)
+\end{bmatrix}.
+$$
+
+这不是另一套旋转规则，只是把 $q p q^*$ 中对 $v$ 的线性运算整理成矩阵。**公式要求 $q$ 是单位四元数**；一般非零四元数要先归一化，零四元数不能表示旋转。
+
+代入绕 $z$ 轴 $90^\circ$ 的例子：
+
+$$
+R=\begin{bmatrix}0&-1&0\\1&0&0\\0&0&1\end{bmatrix},
+\qquad R\begin{bmatrix}1\\0\\0\end{bmatrix}
+=\begin{bmatrix}0\\1\\0\end{bmatrix}.
+$$
+
+原来的 $x$ 方向转到了 $y$ 方向。$R$ 的三列就是三个单位轴旋转后的结果。把 $q$ 换成 $-q$，每个二次乘积都不变，所以旋转矩阵也不变。
+
+代码中 `tx,ty,tz` 组成的向量就是 $2(u\times v)$；最后三行计算 $v+w\,t+u\times t$，正好对应上述公式，无需先生成完整 $3\times3$ 矩阵。
+
+### 1.3 Exp 和 Log：把三维小增量与旋转联系起来
+
+旋转向量 $\phi=\theta n$ 的方向是旋转轴、长度是旋转角。本文 $\mathrm{Exp}(\phi)$ 表示 $\exp([\phi]_\times)$，结果是旋转矩阵，不是对三个分量分别取指数。
+
+令 $K=[\phi]_\times$、$\theta=\|\phi\|$，Rodrigues 公式为：
+
+$$
+\mathrm{Exp}(\phi)
+=I+\frac{\sin\theta}{\theta}K
++\frac{1-\cos\theta}{\theta^2}K^2.
+$$
+
+当角度很小时，$\sin\theta/\theta\to1$、$(1-\cos\theta)/\theta^2\to1/2$，所以一阶近似是 $\mathrm{Exp}(\phi)\approx I+[\phi]_\times$。不能在 $\theta=0$ 时直接算 $0/0$，实现中要使用极限或级数。
+
+$\mathrm{Log}$ 做反向转换。在选取 $w\ge0$、最短旋转角的单位四元数 $q=(w,u)$ 后，可以写成：
+
+$$
+\theta=2\operatorname{atan2}(\|u\|,w),\qquad
+\mathrm{Log}(R(q))=\frac{\theta}{\|u\|}u.
+$$
+
+$u\to0$ 时用极限 $2u$。接近 $180^\circ$ 时旋转轴的符号存在分支选择，不能认为 Log 在所有旋转上都光滑唯一。
+
 ---
 
 ## 2. 位姿图残差
@@ -83,10 +206,35 @@ R_e = R_{ij}^\top R_i^\top R_j,
 t_e = R_{ij}^\top\left(R_i^\top(t_j - t_i) - t_{ij}\right)
 $$
 
+先从几何上读这两个式子。由当前节点状态预测的相对位姿是：
+
+$$
+\hat T_{ij}=T_i^{-1}T_j,
+\qquad \hat R_{ij}=R_i^\top R_j,
+\qquad \hat t_{ij}=R_i^\top(t_j-t_i).
+$$
+
+$t_j-t_i$ 是世界系中的两节点位移；乘 $R_i^\top$ 后变成第 $i$ 帧中的位移。测量 $T_{ij}$ 同样把 $j$ 系坐标变到 $i$ 系，才能与预测比较。
+
+例如 $i$ 帧绕世界 $z$ 轴转了 $90^\circ$，$t_i=(1,2,0)$、$t_j=(1,4,0)$。世界系位移是 $(0,2,0)$，但在 $i$ 系中是 $(2,0,0)$。直接把世界位移与局部测量相减，就会写错残差。
+
+误差变换 $T_e=T_{ij}^{-1}\hat T_{ij}$ 是“先抵消测量，再看预测剩下什么”。两者完全一致时 $R_e=I,t_e=0$。平移误差中额外的 $R_{ij}^\top$ 来自测量逆变换的旋转；它把差值再转到误差变换采用的局部坐标。
+
 - $R_e$ 是三维旋转，取 $\mathrm{Log}(R_e)$ 得到 3 维旋转向量；
 - $t_e$ 直接作为 3 维平移残差（局部坐标下的平移误差）。
 
 > 严格的 SE(3) Log 映射平移部分是 $V^{-1}(\omega)t_e$。本文和代码采用 $[2\,\mathrm{vec}(q_e),\, t_e]$ 的分离残差，**并非上式严格的 SE(3) Log**。这是另一种合法建模方式，不保证比 Log 收敛更好；协方差必须与所选残差的坐标系和扰动约定一致。
+
+若要读懂这里的 $V$：取 $\omega=\mathrm{Log}(R_e)$、$\theta=\|\omega\|$，按本课“旋转在前、平移在后”的顺序：
+
+$$
+\mathrm{Log}(T_e)=\begin{bmatrix}\omega\\\nu\end{bmatrix},
+\quad V(\omega)\nu=t_e,
+\quad V=I+\frac{1-\cos\theta}{\theta^2}[\omega]_\times
++\frac{\theta-\sin\theta}{\theta^3}[\omega]_\times^2.
+$$
+
+$\nu$ 是李代数中的平移坐标，通常不等于直接读出来的 $t_e$。$\theta\to0$ 时 $V\to I$，二者才接近。初学本课可先掌握代码中的分离残差，避免把两种定义混用。
 
 ### 2.1 旋转残差与四元数
 
@@ -115,6 +263,8 @@ $$
 - 缺点：大角度时残差尺度被压缩，收敛路径和严格 Log 不同；
 - 不同实现采用不同约定，不能把 $2\,\mathrm{vec}$、SO(3) Log 和 SE(3) Log 当成同一种残差。
 
+例如误差角为 $0.1$ rad，$2\sin(0.05)\approx0.099958$，非常接近 $0.1$；误差角为 $\pi$ 时，近似残差长度只有 $2$，而 Log 的长度是 $\pi$。它们都能在零误差处取零，但远离零时尺度不同。
+
 ### 2.2 四元数双覆盖
 
 $q$ 和 $-q$ 表示同一个旋转。如果不处理，$q_e$ 可能在两次迭代间突然反号，残差从 $+\theta$ 跳到 $-\theta$，雅可比不连续。
@@ -128,6 +278,8 @@ if (qe[0] < T(0.0)) {
 ```
 
 把 $q_e$ 统一到 $w \ge 0$ 的半球。
+
+这能统一大多数情况下的符号，但 $w=0$ 对应 $180^\circ$ 的分支边界，不能消除那里固有的轴符号歧义。对当前各向同性平方旋转项，整体反号本身不改变代价；统一符号有助于一致地解释残差和选择短旋转分支。
 
 ---
 
@@ -164,6 +316,10 @@ $$
 
 其中 $L$ 是 $\Sigma^{-1}$ 的 Cholesky 因子。Ceres 的 `Problem` 不直接接收协方差，所以**白化必须你在残差里做**。
 
+这里特意把因子定义为 $\Sigma^{-1}=L^\top L$，所以 $L$ 是上三角平方根信息矩阵。如果库返回的是下三角因子 $L_{low}$，满足 $\Sigma^{-1}=L_{low}L_{low}^\top$，就应该乘 $L_{low}^\top$。
+
+例如旋转误差 $0.02$ rad、平移误差 $0.1$ m，若标准差分别是 $0.01$ rad 和 $0.05$ m，白化后两者都是 $2$，都表示“两倍噪声尺度”。直接把 rad 和 m 混在一起平方相加，则没有这种统计意义。
+
 ---
 
 ## 4. 流形与左扰动
@@ -171,8 +327,11 @@ $$
 四元数有 4 个数，但只有 3 个自由度。优化变量不能直接相加：
 
 $$
-q + \delta \quad\text{会破坏 } \|q\|=1
+q+\eta,\qquad \eta\in\mathbb R^4
+\quad\text{通常会破坏 }\|q\|=1.
 $$
+
+这里 $\eta$ 是对四个存储分量的普通加法；下面的 $\delta\in\mathbb R^3$ 才是三个独立旋转增量，二者的维度和含义不同。
 
 Ceres 的 `Manifold` 定义
 
@@ -193,6 +352,22 @@ $$
 $$
 
 自动微分对 $q$ 求的是普通偏导，Ceres 再用 `PlusJacobian` 把它投影到 3 维切空间。**你只需要保证残差对 $q$ 的表达式正确，流形的部分交给 Ceres。**
+
+可以把流形理解为“用 3 个自由增量，安全地修改 4 个有约束的存储分量”。$\delta=0$ 时使用极限，增量四元数是 $(1,0,0,0)$，原姿态不变。
+
+小增量下，$\cos\|\delta\|\approx1$、$\sin\|\delta\|\delta/\|\delta\|\approx\delta$。由 Hamilton 乘法可得：
+
+$$
+\left.\frac{\partial(q\boxplus\delta)}{\partial\delta}\right|_{\delta=0}
+=\begin{bmatrix}
+-x&-y&-z\\
+w&z&-y\\
+-z&w&x\\
+y&-x&w
+\end{bmatrix}\in\mathbb R^{4\times3}.
+$$
+
+因此，一个六维边残差的 ambient 旋转雅可比是 $6\times4$；再乘这个 $4\times3$ 矩阵，才得到求解时使用的 $6\times3$ 局部雅可比。不要为了“只有 3 个自由度”就给接口少写一列。
 
 > 如果你自己推导解析雅可比，必须确认框架用的是左扰动还是右扰动。左右扰动差一个 $R$，符号写反会导致优化不收敛，而且很难从表面看出来。
 
@@ -649,7 +824,7 @@ cmake --build build -j
 ## 11. 常见坑
 
 1. **测量方向反了**：$T_{ij} = T_i^{-1}T_j$ 还是 $T_j^{-1}T_i$。反了不报错，但会发散或收敛到错解。
-2. **四元数顺序**：Ceres 的 `QuaternionManifold` 是 $[w,x,y,z]$，Eigen 是 $[x,y,z,w]$。混用必须换 `EigenQuaternionManifold`。
+2. **四元数顺序**：Ceres 的 `QuaternionManifold` 是 $[w,x,y,z]$；Eigen 的 `coeffs()`/原始存储为 $[x,y,z,w]$，构造函数 `Quaterniond(w,x,y,z)` 则是标量在前。直接把 Eigen 存储交给 Ceres 时使用 `EigenQuaternionManifold`，或先显式重排为 `wxyz`。
 3. **参数相关表达式失去 `T` 类型**：编译失败，或手动提取标量后丢失导数。
 4. **忘记固定第一个位姿**：$H$ 奇异，求解失败或整体漂移。
 5. **sigma 单位不统一**：旋转用弧度、平移用米，量级差太多会让优化被一项主导。
