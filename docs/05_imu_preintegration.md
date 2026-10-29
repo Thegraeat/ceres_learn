@@ -473,25 +473,32 @@ $$
 ### 8.2 预积分
 
 ```cpp
-double a_i[3];
-QuatRotate(pre.dq, a, a_i);   // ΔR * a
+const Eigen::Vector3d accel_i = delta_rotation * accel;  // ΔR * a
 
-pre.dp[j] += pre.dv[j] * dt + 0.5 * a_i[j] * dt * dt;
-pre.dv[j] += a_i[j] * dt;
+delta_position += delta_velocity * kDt + 0.5 * accel_i * kDt * kDt;
+delta_velocity += accel_i * kDt;
 
-QuatMul(pre.dq, dq_step, dq_new);   // ΔR <- ΔR * Exp(ω dt)
+delta_rotation = (delta_rotation * rotation_step).normalized();
 ```
 
-注意顺序：`dp` 用旧的 `dv`，`dv` 用旧的 $\Delta R$，最后更新 $\Delta R$。
+`delta_position` 和 `delta_velocity` 是 `pre.dp`、`pre.dv` 的 Eigen Map 视图，更新它们就会写入对应数组。`delta_rotation` 是 Eigen 四元数，积分结束后按 `wxyz` 写回 `pre.dq`。`rotation_step` 用 `AngleAxisd(angle, omega / angular_speed)` 表达单步旋转，并在角度过小时使用单位四元数，避免除零。
+
+注意顺序：位置用旧速度，速度用旧的 $\Delta R$，最后更新 $\Delta R$。Eigen 简化了逐分量计算，递推关系仍然是第 4 节的公式。
 
 ### 8.3 残差
 
 ```cpp
-QuatRotateInv(q_i, dv_world, dv_body);   // R_i^T(...)
-residual[3] = (dv_body[0] - pre_.dv[0]) / sigma_v_;
+const Vector3 velocity_error =
+    rotation_i.conjugate() * (velocity_j - velocity_i - gravity * dt)
+    - delta_velocity;
+
+Eigen::Map<Eigen::Matrix<T, 9, 1>> error(residual);
+error.template segment<3>(3) = velocity_error / T(sigma_v_);
 ```
 
-`QuatRotateInv` 用共轭四元数实现 $R^\top v$。
+`Vector3` 是 `Eigen::Matrix<T,3,1>`，`rotation_i` 是由 `wxyz` 参数构造的 `Eigen::Quaternion<T>`；共轭对应单位旋转的逆。九维残差依次放旋转、速度和位置，`segment<3>(3)` 表示从下标 3 开始的三个速度残差分量。对预积分常量使用 `cast<T>()`，将常量转成自动微分可参与运算的标量类型。
+
+`ImuError` 的类、构造函数、参数块顺序和外部创建方式均沿用原来的组织，仅用 Eigen 表达内部计算。
 
 ### 8.4 固定第一帧
 

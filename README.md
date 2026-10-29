@@ -73,6 +73,8 @@ ceres_learn/
 
 课程校验发现与简化边界见 [`docs/REVIEW.md`](docs/REVIEW.md)；额外接口与建模知识见 [`docs/08_ceres_modeling_notes.md`](docs/08_ceres_modeling_notes.md)。
 
+第 3～5 课及对应作业使用 Eigen 简化四元数与向量运算，沿用原有 `wxyz` 参数存储和残差组织。计算等价性验证见[课程校验记录](docs/REVIEW.md)第 6 节。
+
 ---
 
 ## 快速开始

@@ -86,45 +86,48 @@ $$
 // ----------------------------- 四元数工具 -----------------------------
 template <typename T>
 void QuatMul(const T* a, const T* b, T* out) {
-    const T w = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
-    const T x = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
-    const T y = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-    const T z = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
-    out[0] = w;
-    out[1] = x;
-    out[2] = y;
-    out[3] = z;
+    // 构造参数为 wxyz；Eigen 负责 Hamilton 乘法。
+    const Eigen::Quaternion<T> qa(a[0], a[1], a[2], a[3]);
+    const Eigen::Quaternion<T> qb(b[0], b[1], b[2], b[3]);
+    const Eigen::Quaternion<T> product = qa * qb;
+    out[0] = product.w();
+    out[1] = product.x();
+    out[2] = product.y();
+    out[3] = product.z();
 }
 
 template <typename T>
 void QuatConj(const T* q, T* out) {
-    out[0] = q[0];
-    out[1] = -q[1];
-    out[2] = -q[2];
-    out[3] = -q[3];
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Quaternion<T> inverse = rotation.conjugate();
+    out[0] = inverse.w();
+    out[1] = inverse.x();
+    out[2] = inverse.y();
+    out[3] = inverse.z();
 }
 
 template <typename T>
 void QuatRotate(const T* q, const T* v, T* out) {
-    const T w = q[0], x = q[1], y = q[2], z = q[3];
-    const T tx = T(2.0) * (y * v[2] - z * v[1]);
-    const T ty = T(2.0) * (z * v[0] - x * v[2]);
-    const T tz = T(2.0) * (x * v[1] - y * v[0]);
-    out[0] = v[0] + w * tx + (y * tz - z * ty);
-    out[1] = v[1] + w * ty + (z * tx - x * tz);
-    out[2] = v[2] + w * tz + (x * ty - y * tx);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    // 先算出结果，再写输出；输入输出可以使用同一数组。
+    const Eigen::Matrix<T, 3, 1> rotated = rotation * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 template <typename T>
 void QuatRotateInv(const T* q, const T* v, T* out) {
-    T qc[4];
-    QuatConj(q, qc);
-    QuatRotate(qc, v, out);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    const Eigen::Matrix<T, 3, 1> rotated = rotation.conjugate() * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 void NormalizeQuat(double* q) {
-    const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    for (int i = 0; i < 4; ++i) q[i] /= n;
+    Eigen::Map<Eigen::Vector4d> quaternion(q);
+    quaternion.normalize();
 }
 
 // ----------------------------- 数据结构 -----------------------------
@@ -155,14 +158,17 @@ struct ReprojectionError {
     template <typename T>
     bool operator()(const T* const q, const T* const t, const T* const p,
                     T* residual) const {
-        const T d[3] = {p[0] - t[0], p[1] - t[1], p[2] - t[2]};
-        T pc[3];
-        QuatRotateInv(q, d, pc);
-        if (pc[2] <= T(1e-8)) return false;
+        using Vector3 = Eigen::Matrix<T, 3, 1>;
+        // 参数数组沿用 wxyz，显式构造四元数；向量通过 Map 读取。
+        const Eigen::Quaternion<T> rotation_wc(q[0], q[1], q[2], q[3]);
+        const Eigen::Map<const Vector3> translation_wc(t);
+        const Eigen::Map<const Vector3> point_world(p);
+        const Vector3 point_camera =
+            rotation_wc.conjugate() * (point_world - translation_wc);
+        if (point_camera.z() <= T(1e-8)) return false;
 
-        const T u_pred = T(kFx) * pc[0] / pc[2] + T(kCx);
-        const T v_pred = T(kFy) * pc[1] / pc[2] + T(kCy);
-
+        const T u_pred = T(kFx) * point_camera.x() / point_camera.z() + T(kCx);
+        const T v_pred = T(kFy) * point_camera.y() / point_camera.z() + T(kCy);
         residual[0] = (u_pred - T(u_)) / T(sigma_);
         residual[1] = (v_pred - T(v_)) / T(sigma_);
         return true;

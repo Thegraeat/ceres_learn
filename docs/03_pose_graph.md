@@ -4,6 +4,8 @@
 > 目标：把第 2 课的残差结构搬到 SE(3) 上，理解流形、信息矩阵、稀疏性和 gauge freedom。
 > 前置：第 1 课、第 2 课。
 
+> 代码中的四元数数组沿用 `wxyz`，使用 `QuaternionManifold`。复杂几何运算交给 Eigen；四元数用四参数构造函数读取，三维向量用 `Map` 读取。残差类和创建方式与原来相同。
+
 ---
 
 ## 1. SE(3) 基础
@@ -78,7 +80,7 @@ R(q)\,v = v + 2w\,(u \times v) + 2\,u \times (u \times v),
 \qquad u = [x,y,z]^\top
 $$
 
-这就是代码里 `QuatRotate` 的实现。
+这就是 `QuatRotate` 表达的数学操作。实现中用 Eigen 的 `rotation * vector` 完成旋转，下面展开它对应的数学原理。
 
 #### 1.2.1 四元数里的四个数从哪里来
 
@@ -163,7 +165,7 @@ $$
 
 原来的 $x$ 方向转到了 $y$ 方向。$R$ 的三列就是三个单位轴旋转后的结果。把 $q$ 换成 $-q$，每个二次乘积都不变，所以旋转矩阵也不变。
 
-代码中 `tx,ty,tz` 组成的向量就是 $2(u\times v)$；最后三行计算 $v+w\,t+u\times t$，正好对应上述公式，无需先生成完整 $3\times3$ 矩阵。
+实现时无需先生成完整 $3\times3$ 矩阵。代码把单位四元数构造成 `Eigen::Quaternion<T>`，用 `rotation * vector` 计算相同的旋转；上面的展开式帮助理解它为什么成立。
 
 ### 1.3 Exp 和 Log：把三维小增量与旋转联系起来
 
@@ -272,8 +274,8 @@ $q$ 和 $-q$ 表示同一个旋转。如果不处理，$q_e$ 可能在两次迭�
 代码的处理：
 
 ```cpp
-if (qe[0] < T(0.0)) {
-    for (int k = 0; k < 4; ++k) qe[k] = -qe[k];
+if (rotation_error.w() < T(0.0)) {
+    rotation_error.coeffs() = -rotation_error.coeffs();
 }
 ```
 
@@ -301,9 +303,9 @@ $$
 白化就是逐项除以 $\sigma_r$ 或 $\sigma_t$，代码正是这么做的：
 
 ```cpp
-residual[0] = T(2.0) * qe[1] / T(sigma_rot_);
-...
-residual[3] = et[0] / T(sigma_trans_);
+Eigen::Map<Eigen::Matrix<T, 6, 1>> error(residual);
+error.template head<3>() = T(2.0) * rotation_error.vec() / T(sigma_rot_);
+error.template tail<3>() = translation_error / T(sigma_trans_);
 ```
 
 一般情形：
@@ -441,6 +443,9 @@ problem.SetParameterBlockConstant(init[0].t);
 
 #include <ceres/ceres.h>
 
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -453,39 +458,40 @@ problem.SetParameterBlockConstant(init[0].t);
 
 template <typename T>
 void QuatMul(const T* a, const T* b, T* out) {
-    const T w = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
-    const T x = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
-    const T y = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-    const T z = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
-    out[0] = w;
-    out[1] = x;
-    out[2] = y;
-    out[3] = z;
+    // 构造参数为 wxyz；Eigen 负责 Hamilton 乘法。
+    const Eigen::Quaternion<T> qa(a[0], a[1], a[2], a[3]);
+    const Eigen::Quaternion<T> qb(b[0], b[1], b[2], b[3]);
+    const Eigen::Quaternion<T> product = qa * qb;
+    out[0] = product.w();
+    out[1] = product.x();
+    out[2] = product.y();
+    out[3] = product.z();
 }
 
 template <typename T>
 void QuatConj(const T* q, T* out) {
-    out[0] = q[0];
-    out[1] = -q[1];
-    out[2] = -q[2];
-    out[3] = -q[3];
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Quaternion<T> inverse = rotation.conjugate();
+    out[0] = inverse.w();
+    out[1] = inverse.x();
+    out[2] = inverse.y();
+    out[3] = inverse.z();
 }
 
 // out = R(q) * v，用四元数旋转向量（比先转矩阵再乘更省）。
 template <typename T>
 void QuatRotate(const T* q, const T* v, T* out) {
-    const T w = q[0], x = q[1], y = q[2], z = q[3];
-    const T tx = T(2.0) * (y * v[2] - z * v[1]);
-    const T ty = T(2.0) * (z * v[0] - x * v[2]);
-    const T tz = T(2.0) * (x * v[1] - y * v[0]);
-    out[0] = v[0] + w * tx + (y * tz - z * ty);
-    out[1] = v[1] + w * ty + (z * tx - x * tz);
-    out[2] = v[2] + w * tz + (x * ty - y * tx);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    // 先算出结果，再写输出；输入输出可以使用同一数组。
+    const Eigen::Matrix<T, 3, 1> rotated = rotation * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 void NormalizeQuat(double* q) {
-    const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    for (int i = 0; i < 4; ++i) q[i] /= n;
+    Eigen::Map<Eigen::Vector4d> quaternion(q);
+    quaternion.normalize();
 }
 
 // ----------------------------- 数据结构 -----------------------------
@@ -512,47 +518,30 @@ struct EdgeCost {
     bool operator()(const T* const q_i, const T* const t_i,
                     const T* const q_j, const T* const t_j,
                     T* residual) const {
-        // 1) 旋转残差：q_e = q_ij^{-1} * q_i^{-1} * q_j
-        T qij[4] = {T(q_ij_[0]), T(q_ij_[1]), T(q_ij_[2]), T(q_ij_[3])};
-        T qij_inv[4];
-        QuatConj(qij, qij_inv);
+        using Vector3 = Eigen::Matrix<T, 3, 1>;
+        const Eigen::Quaternion<T> rotation_i(q_i[0], q_i[1], q_i[2], q_i[3]);
+        const Eigen::Quaternion<T> rotation_j(q_j[0], q_j[1], q_j[2], q_j[3]);
+        const Eigen::Quaternion<T> measured_rotation{
+            T(q_ij_[0]), T(q_ij_[1]), T(q_ij_[2]), T(q_ij_[3])};
+        const Eigen::Map<const Vector3> position_i(t_i);
+        const Eigen::Map<const Vector3> position_j(t_j);
+        const Vector3 measured_translation =
+            Eigen::Map<const Eigen::Vector3d>(t_ij_).cast<T>();
 
-        T qi_inv[4];
-        QuatConj(q_i, qi_inv);
-
-        T tmp[4];
-        QuatMul(qi_inv, q_j, tmp);
-        T qe[4];
-        QuatMul(qij_inv, tmp, qe);
-
-        // 四元数双覆盖：q 与 -q 是同一个旋转。统一到 w >= 0 的半球，
-        // 否则相邻两次迭代的残差可能突然反号，雅可比会跳变。
-        if (qe[0] < T(0.0)) {
-            for (int k = 0; k < 4; ++k) qe[k] = -qe[k];
+        // q_e = q_ij^{-1} * q_i^{-1} * q_j，统一到 w >= 0 的半球。
+        Eigen::Quaternion<T> rotation_error =
+            measured_rotation.conjugate() * rotation_i.conjugate() * rotation_j;
+        if (rotation_error.w() < T(0.0)) {
+            rotation_error.coeffs() = -rotation_error.coeffs();
         }
 
-        // 2 * vec(q) 是旋转向量的小角度近似（qe ≈ [1, θ/2] 时正好等于 θ）。
-        // 此处使用小角度近似，不等同于完整的 SO(3) Log。
-        residual[0] = T(2.0) * qe[1] / T(sigma_rot_);
-        residual[1] = T(2.0) * qe[2] / T(sigma_rot_);
-        residual[2] = T(2.0) * qe[3] / T(sigma_rot_);
+        // e_t = R_ij^T * (R_i^T * (t_j - t_i) - t_ij)。
+        const Vector3 translation_error = measured_rotation.conjugate() *
+            (rotation_i.conjugate() * (position_j - position_i) - measured_translation);
 
-        // 2) 平移残差：e_t = R_ij^T * ( R_i^T * (t_j - t_i) - t_ij )
-        T tij[3] = {T(t_ij_[0]), T(t_ij_[1]), T(t_ij_[2])};
-        T d[3] = {t_j[0] - t_i[0], t_j[1] - t_i[1], t_j[2] - t_i[2]};
-
-        T ri[3];
-        QuatRotate(qi_inv, d, ri);
-        ri[0] -= tij[0];
-        ri[1] -= tij[1];
-        ri[2] -= tij[2];
-
-        T et[3];
-        QuatRotate(qij_inv, ri, et);
-
-        residual[3] = et[0] / T(sigma_trans_);
-        residual[4] = et[1] / T(sigma_trans_);
-        residual[5] = et[2] / T(sigma_trans_);
+        Eigen::Map<Eigen::Matrix<T, 6, 1>> error(residual);
+        error.template head<3>() = T(2.0) * rotation_error.vec() / T(sigma_rot_);
+        error.template tail<3>() = translation_error / T(sigma_trans_);
         return true;
     }
 
@@ -703,19 +692,24 @@ int main() {
 
 ## 8. 代码逐段讲解
 
-### 8.1 为什么四元数工具要写成模板
+### 8.1 用 Eigen 表达几何，保留模板标量
 
 ```cpp
-template <typename T>
-void QuatMul(const T* a, const T* b, T* out);
+using Vector3 = Eigen::Matrix<T, 3, 1>;
+const Eigen::Quaternion<T> rotation_i(q_i[0], q_i[1], q_i[2], q_i[3]);
+const Eigen::Map<const Vector3> position_i(t_i);
 ```
 
-`EdgeCost::operator()` 里会以 `T = ceres::Jet<double, 12>` 调用这些函数。如果写成 `double` 版本：
+`Vector3` 是三维列向量类型的别名。`Map` 让三维数组具有向量加减等操作，不复制数据。四元数数组是 `wxyz`，因此通过构造函数显式读取；不能直接用按 `xyzw` 解释内存的 `Map<Quaternion<T>>`。
+
+`EdgeCost::operator()` 求导时的标量类型是 `ceres::Jet<double, 14>`，因为输入存储维度为 $4+3+4+3=14$；求解时的切空间维度则为 $3+3+3+3=12$。依赖待估参数的 Eigen 向量、四元数都保留 `T`，不能改成固定的 `Vector3d`、`Quaterniond`：
 
 - 要么编译失败（Jet 不能隐式转 double）；
 - 要么在内部把 Jet 截断成 double，雅可比全是 0。
 
-`QuatRotate` 先算 `tx,ty,tz` 再写 `out`，所以 `out` 和 `v` 可以指向同一块内存，不会出错。
+供初值构造等代码调用的 `QuatMul`、`QuatRotate` 接口继续保留，内部也改用 Eigen。`QuatRotate` 先将结果求值为一个具体向量，再写输出数组，因此输入输出可以指向同一块内存。
+
+`error.template head<3>()` 是取六维残差的前三项，`tail<3>()` 是取后三项。这里 `template` 是 C++ 模板语法所需的说明，`3` 表示编译时确定的分段长度；没有改变残差的数量或分组。
 
 ### 8.2 残差的四个参数块
 
@@ -743,8 +737,8 @@ problem.AddResidualBlock(cost, loss,
 ### 8.3 旋转残差
 
 ```cpp
-QuatMul(qi_inv, q_j, tmp);       // q_i^{-1} q_j
-QuatMul(qij_inv, tmp, qe);       // q_ij^{-1} q_i^{-1} q_j
+Eigen::Quaternion<T> rotation_error =
+    measured_rotation.conjugate() * rotation_i.conjugate() * rotation_j;
 ```
 
 注意顺序：**先 `i` 的逆，再 `j`**。反过来就是 $T_j^{-1}T_i$，残差会完全错。
@@ -752,9 +746,8 @@ QuatMul(qij_inv, tmp, qe);       // q_ij^{-1} q_i^{-1} q_j
 ### 8.4 平移残差
 
 ```cpp
-QuatRotate(qi_inv, d, ri);       // R_i^T (t_j - t_i)
-ri[k] -= tij[k];                  // 减去测量平移
-QuatRotate(qij_inv, ri, et);     // R_ij^T (...)
+const Vector3 translation_error = measured_rotation.conjugate() *
+    (rotation_i.conjugate() * (position_j - position_i) - measured_translation);
 ```
 
 几何含义：

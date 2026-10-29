@@ -20,45 +20,48 @@
 
 template <typename T>
 void QuatMul(const T* a, const T* b, T* out) {
-    const T w = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
-    const T x = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
-    const T y = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-    const T z = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
-    out[0] = w;
-    out[1] = x;
-    out[2] = y;
-    out[3] = z;
+    // 构造参数为 wxyz；Eigen 负责 Hamilton 乘法。
+    const Eigen::Quaternion<T> qa(a[0], a[1], a[2], a[3]);
+    const Eigen::Quaternion<T> qb(b[0], b[1], b[2], b[3]);
+    const Eigen::Quaternion<T> product = qa * qb;
+    out[0] = product.w();
+    out[1] = product.x();
+    out[2] = product.y();
+    out[3] = product.z();
 }
 
 template <typename T>
 void QuatConj(const T* q, T* out) {
-    out[0] = q[0];
-    out[1] = -q[1];
-    out[2] = -q[2];
-    out[3] = -q[3];
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Quaternion<T> inverse = rotation.conjugate();
+    out[0] = inverse.w();
+    out[1] = inverse.x();
+    out[2] = inverse.y();
+    out[3] = inverse.z();
 }
 
 template <typename T>
 void QuatRotate(const T* q, const T* v, T* out) {
-    const T w = q[0], x = q[1], y = q[2], z = q[3];
-    const T tx = T(2.0) * (y * v[2] - z * v[1]);
-    const T ty = T(2.0) * (z * v[0] - x * v[2]);
-    const T tz = T(2.0) * (x * v[1] - y * v[0]);
-    out[0] = v[0] + w * tx + (y * tz - z * ty);
-    out[1] = v[1] + w * ty + (z * tx - x * tz);
-    out[2] = v[2] + w * tz + (x * ty - y * tx);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    // 先算出结果，再写输出；输入输出可以使用同一数组。
+    const Eigen::Matrix<T, 3, 1> rotated = rotation * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 template <typename T>
 void QuatRotateInv(const T* q, const T* v, T* out) {
-    T qc[4];
-    QuatConj(q, qc);
-    QuatRotate(qc, v, out);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    const Eigen::Matrix<T, 3, 1> rotated = rotation.conjugate() * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 void NormalizeQuat(double* q) {
-    const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    for (int i = 0; i < 4; ++i) q[i] /= n;
+    Eigen::Map<Eigen::Vector4d> quaternion(q);
+    quaternion.normalize();
 }
 
 struct Pose {
@@ -98,41 +101,32 @@ Preintegration Integrate(const std::vector<ImuSample>& samples,
                          const double ba[3]) {
     Preintegration pre;
     pre.dt = (end - start) * kDt;
+    const Eigen::Map<const Eigen::Vector3d> gyro_bias(bg), accel_bias(ba);
+    Eigen::Map<Eigen::Vector3d> delta_velocity(pre.dv), delta_position(pre.dp);
+    Eigen::Quaterniond delta_rotation = Eigen::Quaterniond::Identity();
 
     for (int k = start; k < end; ++k) {
-        const double omega[3] = {samples[k].gyro.x() - bg[0],
-                                 samples[k].gyro.y() - bg[1],
-                                 samples[k].gyro.z() - bg[2]};
-        const double a[3] = {samples[k].accel.x() - ba[0],
-                             samples[k].accel.y() - ba[1],
-                             samples[k].accel.z() - ba[2]};
-
-        const double angle = std::sqrt(omega[0] * omega[0] + omega[1] * omega[1] +
-                                       omega[2] * omega[2]) *
-                             kDt;
-        double dq_step[4] = {1.0, 0.0, 0.0, 0.0};
+        const Eigen::Vector3d omega = samples[k].gyro - gyro_bias;
+        const Eigen::Vector3d accel = samples[k].accel - accel_bias;
+        const double angular_speed = omega.norm();
+        const double angle = angular_speed * kDt;
+        Eigen::Quaterniond rotation_step = Eigen::Quaterniond::Identity();
         if (angle > 1e-12) {
-            const double s = std::sin(angle / 2.0) / (angle / kDt);
-            dq_step[0] = std::cos(angle / 2.0);
-            dq_step[1] = s * omega[0];
-            dq_step[2] = s * omega[1];
-            dq_step[3] = s * omega[2];
+            rotation_step = Eigen::AngleAxisd(angle, omega / angular_speed);
         }
 
-        double a_i[3];
-        QuatRotate(pre.dq, a, a_i);
-
-        for (int j = 0; j < 3; ++j) {
-            pre.dp[j] += pre.dv[j] * kDt + 0.5 * a_i[j] * kDt * kDt;
-            pre.dv[j] += a_i[j] * kDt;
-        }
-
-        double dq_new[4];
-        QuatMul(pre.dq, dq_step, dq_new);
-        NormalizeQuat(dq_new);
-        for (int j = 0; j < 4; ++j) pre.dq[j] = dq_new[j];
+        // 都用本步更新前的旋转和速度：先位置，再速度，最后旋转。
+        const Eigen::Vector3d accel_i = delta_rotation * accel;
+        delta_position += delta_velocity * kDt + 0.5 * accel_i * kDt * kDt;
+        delta_velocity += accel_i * kDt;
+        delta_rotation = (delta_rotation * rotation_step).normalized();
     }
 
+    // 预积分结构仍保存 wxyz 数组，避免改变调用方的数据约定。
+    pre.dq[0] = delta_rotation.w();
+    pre.dq[1] = delta_rotation.x();
+    pre.dq[2] = delta_rotation.y();
+    pre.dq[3] = delta_rotation.z();
     return pre;
 }
 
@@ -144,50 +138,35 @@ struct ImuError {
     bool operator()(const T* const q_i, const T* const p_i, const T* const v_i,
                     const T* const q_j, const T* const p_j, const T* const v_j,
                     T* residual) const {
-        T dq[4] = {T(pre_.dq[0]), T(pre_.dq[1]), T(pre_.dq[2]), T(pre_.dq[3])};
-        T dq_inv[4];
-        QuatConj(dq, dq_inv);
-
-        T qi_inv[4];
-        QuatConj(q_i, qi_inv);
-
-        T tmp[4];
-        QuatMul(qi_inv, q_j, tmp);
-        T qe[4];
-        QuatMul(dq_inv, tmp, qe);
-
-        if (qe[0] < T(0.0)) {
-            for (int k = 0; k < 4; ++k) qe[k] = -qe[k];
-        }
-
-        residual[0] = T(2.0) * qe[1] / T(sigma_r_);
-        residual[1] = T(2.0) * qe[2] / T(sigma_r_);
-        residual[2] = T(2.0) * qe[3] / T(sigma_r_);
-
+        using Vector3 = Eigen::Matrix<T, 3, 1>;
+        const Eigen::Quaternion<T> rotation_i(q_i[0], q_i[1], q_i[2], q_i[3]);
+        const Eigen::Quaternion<T> rotation_j(q_j[0], q_j[1], q_j[2], q_j[3]);
+        const Eigen::Quaternion<T> delta_rotation{
+            T(pre_.dq[0]), T(pre_.dq[1]), T(pre_.dq[2]), T(pre_.dq[3])};
+        const Eigen::Map<const Vector3> position_i(p_i), position_j(p_j);
+        const Eigen::Map<const Vector3> velocity_i(v_i), velocity_j(v_j);
+        const Vector3 gravity = Eigen::Map<const Eigen::Vector3d>(kGravity).cast<T>();
+        const Vector3 delta_velocity = Eigen::Map<const Eigen::Vector3d>(pre_.dv).cast<T>();
+        const Vector3 delta_position = Eigen::Map<const Eigen::Vector3d>(pre_.dp).cast<T>();
         const T dt = T(pre_.dt);
 
-        T dv_world[3] = {
-            v_j[0] - v_i[0] - T(kGravity[0]) * dt,
-            v_j[1] - v_i[1] - T(kGravity[1]) * dt,
-            v_j[2] - v_i[2] - T(kGravity[2]) * dt,
-        };
-        T dv_body[3];
-        QuatRotateInv(q_i, dv_world, dv_body);
-        residual[3] = (dv_body[0] - T(pre_.dv[0])) / T(sigma_v_);
-        residual[4] = (dv_body[1] - T(pre_.dv[1])) / T(sigma_v_);
-        residual[5] = (dv_body[2] - T(pre_.dv[2])) / T(sigma_v_);
+        Eigen::Quaternion<T> rotation_error =
+            delta_rotation.conjugate() * rotation_i.conjugate() * rotation_j;
+        if (rotation_error.w() < T(0.0)) {
+            rotation_error.coeffs() = -rotation_error.coeffs();
+        }
 
-        T dp_world[3] = {
-            p_j[0] - p_i[0] - v_i[0] * dt - T(0.5 * kGravity[0]) * dt * dt,
-            p_j[1] - p_i[1] - v_i[1] * dt - T(0.5 * kGravity[1]) * dt * dt,
-            p_j[2] - p_i[2] - v_i[2] * dt - T(0.5 * kGravity[2]) * dt * dt,
-        };
-        T dp_body[3];
-        QuatRotateInv(q_i, dp_world, dp_body);
-        residual[6] = (dp_body[0] - T(pre_.dp[0])) / T(sigma_p_);
-        residual[7] = (dp_body[1] - T(pre_.dp[1])) / T(sigma_p_);
-        residual[8] = (dp_body[2] - T(pre_.dp[2])) / T(sigma_p_);
+        const Vector3 velocity_error =
+            rotation_i.conjugate() * (velocity_j - velocity_i - gravity * dt)
+            - delta_velocity;
+        const Vector3 position_error = rotation_i.conjugate() *
+            (position_j - position_i - velocity_i * dt - T(0.5) * gravity * dt * dt)
+            - delta_position;
 
+        Eigen::Map<Eigen::Matrix<T, 9, 1>> error(residual);
+        error.template segment<3>(0) = T(2.0) * rotation_error.vec() / T(sigma_r_);
+        error.template segment<3>(3) = velocity_error / T(sigma_v_);
+        error.template segment<3>(6) = position_error / T(sigma_p_);
         return true;
     }
 
@@ -256,9 +235,7 @@ double RotationRmse(const std::vector<State>& est, const std::vector<State>& gt)
 double ResidualNorm(const ImuError& error, const State& a, const State& b) {
     double r[9];
     error(a.pose.q, a.pose.t, a.v.data(), b.pose.q, b.pose.t, b.v.data(), r);
-    double sum = 0.0;
-    for (int k = 0; k < 9; ++k) sum += r[k] * r[k];
-    return std::sqrt(sum);
+    return Eigen::Map<const Eigen::Matrix<double, 9, 1>>(r).norm();
 }
 
 void Solve(const std::vector<Preintegration>& pre,

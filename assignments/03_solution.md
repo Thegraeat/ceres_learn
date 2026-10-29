@@ -56,7 +56,20 @@ $$
 ## 2. 完整答案代码
 
 ```cpp
+// 第 3 课课后作业参考答案
+//
+// 任务：在位姿图里加入两条错误回环，比较普通最小二乘与 Huber 鲁棒核。
+//   1) 构造 20 个节点的圆轨迹，相邻边 + 回环边
+//   2) 把 (0,5) 和 (5,10) 两条回环的平移测量加 3 米
+//   3) 分别用 loss=nullptr 和 HuberLoss(1.0) 求解
+//   4) 输出 ATE（平移）和 ARE（旋转）
+//
+// 编译后运行：./build/hw03_pose_graph
+
 #include <ceres/ceres.h>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <cmath>
@@ -65,42 +78,45 @@ $$
 #include <utility>
 #include <vector>
 
+// ----------------------------- 四元数工具 -----------------------------
 template <typename T>
 void QuatMul(const T* a, const T* b, T* out) {
-    const T w = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
-    const T x = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
-    const T y = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
-    const T z = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
-    out[0] = w;
-    out[1] = x;
-    out[2] = y;
-    out[3] = z;
+    // 构造参数为 wxyz；Eigen 负责 Hamilton 乘法。
+    const Eigen::Quaternion<T> qa(a[0], a[1], a[2], a[3]);
+    const Eigen::Quaternion<T> qb(b[0], b[1], b[2], b[3]);
+    const Eigen::Quaternion<T> product = qa * qb;
+    out[0] = product.w();
+    out[1] = product.x();
+    out[2] = product.y();
+    out[3] = product.z();
 }
 
 template <typename T>
 void QuatConj(const T* q, T* out) {
-    out[0] = q[0];
-    out[1] = -q[1];
-    out[2] = -q[2];
-    out[3] = -q[3];
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Quaternion<T> inverse = rotation.conjugate();
+    out[0] = inverse.w();
+    out[1] = inverse.x();
+    out[2] = inverse.y();
+    out[3] = inverse.z();
 }
 
 template <typename T>
 void QuatRotate(const T* q, const T* v, T* out) {
-    const T w = q[0], x = q[1], y = q[2], z = q[3];
-    const T tx = T(2.0) * (y * v[2] - z * v[1]);
-    const T ty = T(2.0) * (z * v[0] - x * v[2]);
-    const T tz = T(2.0) * (x * v[1] - y * v[0]);
-    out[0] = v[0] + w * tx + (y * tz - z * ty);
-    out[1] = v[1] + w * ty + (z * tx - x * tz);
-    out[2] = v[2] + w * tz + (x * ty - y * tx);
+    const Eigen::Quaternion<T> rotation(q[0], q[1], q[2], q[3]);
+    const Eigen::Map<const Eigen::Matrix<T, 3, 1>> vector(v);
+    // 先算出结果，再写输出；输入输出可以使用同一数组。
+    const Eigen::Matrix<T, 3, 1> rotated = rotation * vector;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> result(out);
+    result = rotated;
 }
 
 void NormalizeQuat(double* q) {
-    const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    for (int i = 0; i < 4; ++i) q[i] /= n;
+    Eigen::Map<Eigen::Vector4d> quaternion(q);
+    quaternion.normalize();
 }
 
+// ----------------------------- 数据结构 -----------------------------
 struct Pose {
     double q[4] = {1.0, 0.0, 0.0, 0.0};
     double t[3] = {0.0, 0.0, 0.0};
@@ -116,6 +132,7 @@ const double kPi = 3.14159265358979323846;
 const double kSigmaRot = 0.02;
 const double kSigmaTrans = 0.1;
 
+// ----------------------------- 残差块 -----------------------------
 struct EdgeCost {
     EdgeCost(const double* q_ij, const double* t_ij, double sigma_rot, double sigma_trans)
         : sigma_rot_(sigma_rot), sigma_trans_(sigma_trans) {
@@ -127,41 +144,30 @@ struct EdgeCost {
     bool operator()(const T* const q_i, const T* const t_i,
                     const T* const q_j, const T* const t_j,
                     T* residual) const {
-        T qij[4] = {T(q_ij_[0]), T(q_ij_[1]), T(q_ij_[2]), T(q_ij_[3])};
-        T qij_inv[4];
-        QuatConj(qij, qij_inv);
+        using Vector3 = Eigen::Matrix<T, 3, 1>;
+        const Eigen::Quaternion<T> rotation_i(q_i[0], q_i[1], q_i[2], q_i[3]);
+        const Eigen::Quaternion<T> rotation_j(q_j[0], q_j[1], q_j[2], q_j[3]);
+        const Eigen::Quaternion<T> measured_rotation{
+            T(q_ij_[0]), T(q_ij_[1]), T(q_ij_[2]), T(q_ij_[3])};
+        const Eigen::Map<const Vector3> position_i(t_i);
+        const Eigen::Map<const Vector3> position_j(t_j);
+        const Vector3 measured_translation =
+            Eigen::Map<const Eigen::Vector3d>(t_ij_).cast<T>();
 
-        T qi_inv[4];
-        QuatConj(q_i, qi_inv);
-
-        T tmp[4];
-        QuatMul(qi_inv, q_j, tmp);
-        T qe[4];
-        QuatMul(qij_inv, tmp, qe);
-
-        if (qe[0] < T(0.0)) {
-            for (int k = 0; k < 4; ++k) qe[k] = -qe[k];
+        // q_e = q_ij^{-1} * q_i^{-1} * q_j，统一到 w >= 0 的半球。
+        Eigen::Quaternion<T> rotation_error =
+            measured_rotation.conjugate() * rotation_i.conjugate() * rotation_j;
+        if (rotation_error.w() < T(0.0)) {
+            rotation_error.coeffs() = -rotation_error.coeffs();
         }
 
-        residual[0] = T(2.0) * qe[1] / T(sigma_rot_);
-        residual[1] = T(2.0) * qe[2] / T(sigma_rot_);
-        residual[2] = T(2.0) * qe[3] / T(sigma_rot_);
+        // e_t = R_ij^T * (R_i^T * (t_j - t_i) - t_ij)。
+        const Vector3 translation_error = measured_rotation.conjugate() *
+            (rotation_i.conjugate() * (position_j - position_i) - measured_translation);
 
-        T tij[3] = {T(t_ij_[0]), T(t_ij_[1]), T(t_ij_[2])};
-        T d[3] = {t_j[0] - t_i[0], t_j[1] - t_i[1], t_j[2] - t_i[2]};
-
-        T ri[3];
-        QuatRotate(qi_inv, d, ri);
-        ri[0] -= tij[0];
-        ri[1] -= tij[1];
-        ri[2] -= tij[2];
-
-        T et[3];
-        QuatRotate(qij_inv, ri, et);
-
-        residual[3] = et[0] / T(sigma_trans_);
-        residual[4] = et[1] / T(sigma_trans_);
-        residual[5] = et[2] / T(sigma_trans_);
+        Eigen::Map<Eigen::Matrix<T, 6, 1>> error(residual);
+        error.template head<3>() = T(2.0) * rotation_error.vec() / T(sigma_rot_);
+        error.template tail<3>() = translation_error / T(sigma_trans_);
         return true;
     }
 
@@ -171,6 +177,7 @@ struct EdgeCost {
     double sigma_trans_;
 };
 
+// ----------------------------- 工具函数 -----------------------------
 Pose RelativePose(const Pose& a, const Pose& b) {
     Pose out;
     double qa_inv[4];
@@ -258,6 +265,7 @@ int main() {
     std::mt19937 rng(42);
     std::normal_distribution<double> gauss(0.0, 1.0);
 
+    // 真值
     std::vector<Pose> gt(n);
     for (int i = 0; i < n; ++i) {
         const double theta = 2.0 * kPi * i / n;
@@ -269,6 +277,7 @@ int main() {
         gt[i].q[3] = std::sin(yaw / 2.0);
     }
 
+    // 边：相邻 + 跨 5 个节点
     std::vector<std::pair<int, int>> pairs;
     for (int i = 0; i < n; ++i) {
         pairs.emplace_back(i, (i + 1) % n);
@@ -277,6 +286,7 @@ int main() {
         pairs.emplace_back(i, (i + 5) % n);
     }
 
+    // 带噪测量
     std::vector<Edge> edges;
     edges.reserve(pairs.size());
     for (const auto& pr : pairs) {
@@ -295,6 +305,7 @@ int main() {
         edges.push_back({pr.first, pr.second, meas});
     }
 
+    // 初值：航迹推算
     std::vector<Pose> init(n);
     init[0] = gt[0];
     for (int i = 0; i < n - 1; ++i) {
@@ -309,6 +320,7 @@ int main() {
         for (int k = 0; k < 3; ++k) init[i + 1].t[k] = init[i].t[k] + t_local[k];
     }
 
+    // 注入两条错误回环
     std::vector<Edge> bad_edges = edges;
     for (auto& e : bad_edges) {
         if ((e.i == 0 && e.j == 5) || (e.i == 5 && e.j == 10)) {
