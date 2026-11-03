@@ -40,6 +40,10 @@ ceres_learn/
 │   ├── 01_homework.md / 01_solution.md / hw01_basics.cpp
 │   ├── ...
 │   └── 07_homework.md / 07_solution.md / hw07_engineering.cpp
+├── homework/                       # 自己的练习：my_hw01 已完成，my_hw02~07 为待手写模板
+│   ├── my_hw01.cpp
+│   ├── my_hw02.cpp ... my_hw07.cpp
+│   └── README.md                   # 模板约定与 TODO 清单
 └── build/                         # CMake 构建目录（可删除重建）
 ```
 

@@ -68,20 +68,15 @@ cmake --build build --target hw04_ba -j
 ./build/hw07_engineering
 ```
 
-如果你自己写了 `my_hw01.cpp`，在 `CMakeLists.txt` 末尾加：
-
-```cmake
-add_executable(my_hw01 my_hw01.cpp)
-target_link_libraries(my_hw01 PRIVATE Ceres::ceres)
-```
-
-然后：
+如果你在自己的 `homework/` 目录里练习，模板已经注册好 target（`my_hw01` ~ `my_hw07`）：
 
 ```bash
-cmake -S . -B build
-cmake --build build --target my_hw01 -j
-./build/my_hw01
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target my_hw02 -j
+./build/my_hw02
 ```
+
+`my_hw01.cpp` 是已完成的实现，`my_hw02.cpp` ~ `my_hw07.cpp` 是待手写的模板；手写边界和 TODO 约定见 [`homework/README.md`](../homework/README.md)。
 
 ---
 

@@ -50,9 +50,25 @@ target_link_libraries(hw06_marginalization PRIVATE Ceres::ceres)
 add_executable(hw07_engineering assignments/hw07_engineering.cpp)
 target_link_libraries(hw07_engineering PRIVATE Ceres::ceres)
 
-#课后练习
-add_executable(my_hwo1 assignments/my_hw01.cpp)
-target_link_libraries(my_hwo1 PRIVATE Ceres::ceres)
+# 课后练习（homework/ 目录）
+# my_hw01 是已完成的参考实现；my_hw02 ~ my_hw07 是待手写的作业模板。
+add_executable(my_hw01 homework/my_hw01.cpp)
+target_link_libraries(my_hw01 PRIVATE Ceres::ceres)
 
-add_executable(my_hwo2 assignments/my_hw02.cpp)
-target_link_libraries(my_hwo2 PRIVATE Ceres::ceres)
+add_executable(my_hw02 homework/my_hw02.cpp)
+target_link_libraries(my_hw02 PRIVATE Ceres::ceres)
+
+add_executable(my_hw03 homework/my_hw03.cpp)
+target_link_libraries(my_hw03 PRIVATE Ceres::ceres)
+
+add_executable(my_hw04 homework/my_hw04.cpp)
+target_link_libraries(my_hw04 PRIVATE Ceres::ceres)
+
+add_executable(my_hw05 homework/my_hw05.cpp)
+target_link_libraries(my_hw05 PRIVATE Ceres::ceres)
+
+add_executable(my_hw06 homework/my_hw06.cpp)
+target_link_libraries(my_hw06 PRIVATE Ceres::ceres)
+
+add_executable(my_hw07 homework/my_hw07.cpp)
+target_link_libraries(my_hw07 PRIVATE Ceres::ceres)
